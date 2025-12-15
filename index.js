@@ -103,7 +103,7 @@ app.post("/webhook", async (req, res) => {
     // --- Ruteo de comandos ---
     if (text === "AYUDA" || text === "MENU") {
       await sendText(from,
-        "¡Hola! 👋 Soy el bot de Eduardo & Dina.\n\n" +
+        "¡Hola! 👋 Soy el asistente de Eduardo & Dina.\n\n" +
         "Comandos:\n" +
         "• RSVP / CONFIRMAR – te paso la liga para confirmar\n" +
         "• LINK – liga de la invitación\n" +
