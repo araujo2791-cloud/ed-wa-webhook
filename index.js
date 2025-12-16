@@ -1,113 +1,102 @@
 const express = require("express");
-const crypto = require("crypto");
-
 const app = express();
 
-// Guardamos el raw body para validar firma
-app.use(express.json({
-  type: "*/*",
-  verify: (req, res, buf) => {
-    req.rawBody = buf; // Buffer crudo
-  }
-}));
+app.use(express.json({ type: "*/*" }));
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ED_WA_Verify_2025";
 const WA_TOKEN = process.env.WA_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// ✅ App Secret (para validar X-Hub-Signature-256)
-const APP_SECRET = process.env.APP_SECRET;
+const SMARTERASP_BASE_URL = process.env.SMARTERASP_BASE_URL;
+const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 
-// Verificación de Meta (GET)
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
+  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
-// 🔐 Validar firma del request (POST) usando App Secret
-function isValidSignature(req) {
-  // Si no hay APP_SECRET configurado, no podemos validar => rechazamos
-  if (!APP_SECRET) return false;
-
-  const signatureHeader = req.get("x-hub-signature-256") || "";
-  if (!signatureHeader.startsWith("sha256=")) return false;
-
-  const raw = req.rawBody || Buffer.from("");
-
-  const expected = "sha256=" + crypto
-    .createHmac("sha256", APP_SECRET)
-    .update(raw)
-    .digest("hex");
-
-  // Comparación segura (evita ataques de timing)
-  try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signatureHeader),
-      Buffer.from(expected)
-    );
-  } catch {
-    return false;
-  }
-}
-
-// Recepción de eventos (POST)
 app.post("/webhook", async (req, res) => {
   try {
-    // Siempre responde rápido para que Meta no reintente
     res.sendStatus(200);
 
-    // ✅ Validación estricta
-    const ok = isValidSignature(req);
-    if (!ok) {
-      console.warn("Firma inválida o APP_SECRET no configurado. Ignorando request.");
-      return;
-    }
-
     const body = req.body;
-
-    // WhatsApp manda a veces statuses (entregado/leído). Ignóralos.
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
-    if (value?.statuses?.length) {
-      // console.log("Status update:", value.statuses[0]?.status);
-      return;
-    }
-
     const msg = value?.messages?.[0];
     if (!msg) return;
 
-    const from = msg.from; // wa_id del remitente
+    const from = msg.from; // wa_id (ej: 5218112275379)
+
+    // Texto normal
     const text = msg?.text?.body?.trim() || "";
 
-    // Respuesta simple si escribe AYUDA
-    if (text.toUpperCase() === "AYUDA") {
-      await sendText(
-        from,
-        "¡Hola! 👋 Soy el asistente de Eduardo y Dina - E&D.\n\n" +
-        "Para confirmar tu asistencia entra a:\n" +
-        "https://eduardoydina.edusite.com.mx/"
+    // Quick Reply button
+    const quickReplyId = msg?.button?.payload || msg?.interactive?.button_reply?.id || "";
+    const quickReplyTitle = msg?.interactive?.button_reply?.title || "";
+
+    const intent =
+      (text || "").toUpperCase() ||
+      (quickReplyId || "").toUpperCase() ||
+      (quickReplyTitle || "").toUpperCase();
+
+    if (intent === "AYUDA") {
+      await sendText(from,
+        "¡Hola! 👋 Soy el bot de E&D.\n\nPara ver tu invitación, escribe *INVITACION*."
       );
-    } else {
-      await sendText(from, "Escribe *AYUDA* para ver opciones 🙂");
+      return;
+    }
+
+    if (intent === "INVITACION" || intent === "VER_INVITACION") {
+      const data = await getInvite(from);
+      if (!data) {
+        await sendText(from,
+          "Aún no encuentro tu invitación 😕\nConfírmame tu número (con lada) o escríbenos y te ayudamos."
+        );
+        return;
+      }
+
+      const nombre = data.nombre ? ` ${data.nombre}` : "";
+      await sendText(from,
+        `Perfecto${nombre} 🙌\n\nTu *identificador de invitación* es: *${data.code}*\nEntra aquí: ${data.url}`
+      );
+      return;
     }
   } catch (e) {
     console.error("Webhook error:", e);
   }
 });
 
+async function getInvite(waid) {
+  if (!SMARTERASP_BASE_URL || !SMARTERASP_API_KEY) {
+    console.error("Faltan SMARTERASP_BASE_URL o SMARTERASP_API_KEY");
+    return null;
+  }
+
+  const url = `${SMARTERASP_BASE_URL}/Api/WhatsApp/Invite?waid=${encodeURIComponent(waid)}`;
+
+  const resp = await fetch(url, {
+    method: "GET",
+    headers: { "X-API-KEY": SMARTERASP_API_KEY }
+  });
+
+  if (!resp.ok) {
+    console.log("Invite lookup failed:", resp.status);
+    return null;
+  }
+  return await resp.json();
+}
+
 async function sendText(to, message) {
   if (!WA_TOKEN || !PHONE_NUMBER_ID) {
-    console.error("Faltan variables de entorno WA_TOKEN o PHONE_NUMBER_ID");
+    console.error("Faltan variables WA_TOKEN o PHONE_NUMBER_ID");
     return;
   }
 
@@ -123,7 +112,7 @@ async function sendText(to, message) {
   const resp = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${WA_TOKEN}`,
+      "Authorization": `Bearer ${WA_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
