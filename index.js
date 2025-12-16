@@ -2,20 +2,30 @@ const express = require("express");
 const app = express();
 app.use(express.json({ type: "*/*" }));
 
-// ===== BOOT LOG (sirve para confirmar que Render corre ESTE archivo) =====
 console.log("BOOTING APP - index.js - BUILD:", new Date().toISOString());
 
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ED_WA_Verify_2025";
 const WA_TOKEN = process.env.WA_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-const SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE; // https://eduardoydina.edusite.com.mx
-const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;   // tu SmarterAspApiKey
+let SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE; // requerido
+const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
-// DEBUG: si pones DEBUG_RESET_SESSION=1, el bot reinicia sesión en cada mensaje
 const DEBUG_RESET_SESSION = (process.env.DEBUG_RESET_SESSION || "").trim() === "1";
 
-// Sesiones en RAM
+// (opcional) fallback si no está definida
+if (!SMARTERASP_API_BASE) {
+  SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE_FALLBACK;
+  if (SMARTERASP_API_BASE) {
+    console.log("[BOOT] SMARTERASP_API_BASE was undefined, using FALLBACK:", SMARTERASP_API_BASE);
+  }
+}
+
+// limpiar slash final si lo ponen
+if (SMARTERASP_API_BASE && SMARTERASP_API_BASE.endsWith("/")) {
+  SMARTERASP_API_BASE = SMARTERASP_API_BASE.slice(0, -1);
+}
+
 const sessions = new Map();
 
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
@@ -32,7 +42,6 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  // Responde 200 rápido
   res.sendStatus(200);
 
   try {
@@ -45,10 +54,9 @@ app.post("/webhook", async (req, res) => {
     const msg = value?.messages?.[0];
     if (!msg) return;
 
-    const waid = msg.from; // ej: 5218112275379
+    const waid = msg.from;
     const text = (msg?.text?.body || "").trim();
 
-    // ===== logs obligatorios =====
     console.log("========== WEBHOOK HIT ==========");
     console.log("[BOT] waid:", waid);
     console.log("[BOT] text:", text);
@@ -56,10 +64,8 @@ app.post("/webhook", async (req, res) => {
     console.log("[BOT] SMARTERASP_API_BASE:", SMARTERASP_API_BASE);
     console.log("[BOT] SMARTERASP_API_KEY exists:", !!SMARTERASP_API_KEY);
 
-    // Obtén sesión
     let s = sessions.get(waid);
 
-    // Si quieres reiniciar siempre (para pruebas)
     if (DEBUG_RESET_SESSION && s) {
       sessions.delete(waid);
       s = null;
@@ -74,14 +80,12 @@ app.post("/webhook", async (req, res) => {
     console.log("[BOT] state:", s.state);
     console.log("[BOT] hasProfileBefore:", !!s.profile);
 
-    // Cargar perfil si no existe
     if (!s.profile) {
       console.log("[BOT] calling fetchInviteProfile...");
-      s.profile = await fetchInviteProfile(waid);
+      s.profile = await fetchInviteProfile(waid, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
       console.log("[BOT] fetchInviteProfile result:", s.profile);
     }
 
-    // Si no está registrado
     if (!s.profile) {
       await sendText(waid, "Hola 👋 No encontré tu invitación con este número. Por favor comunícate con Eduardo o Dina para apoyarte.");
       console.log("=================================");
@@ -95,7 +99,6 @@ app.post("/webhook", async (req, res) => {
 
     const input = text;
 
-    // START
     if (s.state === "NEW") {
       await sendText(
         waid,
@@ -112,7 +115,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // MENU
     if (s.state === "MENU") {
       if (input === "1") {
         await sendText(waid, `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`);
@@ -151,7 +153,6 @@ O dime tu duda y te ayudo.`
       return;
     }
 
-    // RSVP: ASISTE?
     if (s.state === "RSVP_ASISTE") {
       if (input === "1") {
         s.temp.asistira = true;
@@ -164,12 +165,11 @@ O dime tu duda y te ayudo.`
       if (input === "2") {
         s.temp.asistira = false;
 
-        await postRsvpToSmarterAsp({
-          waid,
-          asistira: false,
-          numInvitados: 0,
-          mensaje: ""
-        });
+        await postRsvpToSmarterAsp(
+          { waid, asistira: false, numInvitados: 0, mensaje: "" },
+          SMARTERASP_API_BASE,
+          SMARTERASP_API_KEY
+        );
 
         await sendText(waid, `Gracias por avisarnos, ${nombre} 🙏 Si cambias de plan, aquí estaré.`);
         s.state = "MENU";
@@ -184,7 +184,6 @@ O dime tu duda y te ayudo.`
       return;
     }
 
-    // RSVP: NUM INVITADOS
     if (s.state === "RSVP_NUM") {
       const n = parseInt(input, 10);
       if (!Number.isFinite(n) || n < 1 || n > cupo) {
@@ -209,7 +208,6 @@ O dime tu duda y te ayudo.`
       return;
     }
 
-    // RSVP: QUIERE MENSAJE?
     if (s.state === "RSVP_MSG_DECIDE") {
       if (input === "1") {
         await sendText(waid, "Escribe tu mensaje (máximo 500 caracteres) 🙂");
@@ -219,12 +217,11 @@ O dime tu duda y te ayudo.`
         return;
       }
       if (input === "2") {
-        await postRsvpToSmarterAsp({
-          waid,
-          asistira: true,
-          numInvitados: s.temp.numInvitados,
-          mensaje: ""
-        });
+        await postRsvpToSmarterAsp(
+          { waid, asistira: true, numInvitados: s.temp.numInvitados, mensaje: "" },
+          SMARTERASP_API_BASE,
+          SMARTERASP_API_KEY
+        );
 
         await sendText(waid, `¡Listo! 🎉 Confirmación registrada.\n\nNos vemos en la boda 💛`);
         s.state = "MENU";
@@ -239,16 +236,14 @@ O dime tu duda y te ayudo.`
       return;
     }
 
-    // RSVP: CAPTURA MENSAJE
     if (s.state === "RSVP_MSG_WRITE") {
       const msgText = (input || "").slice(0, 500);
 
-      await postRsvpToSmarterAsp({
-        waid,
-        asistira: true,
-        numInvitados: s.temp.numInvitados,
-        mensaje: msgText
-      });
+      await postRsvpToSmarterAsp(
+        { waid, asistira: true, numInvitados: s.temp.numInvitados, mensaje: msgText },
+        SMARTERASP_API_BASE,
+        SMARTERASP_API_KEY
+      );
 
       await sendText(waid, `¡Gracias! 🎉 Confirmación registrada.\n\nMensaje recibido 💌`);
       s.state = "MENU";
@@ -258,7 +253,6 @@ O dime tu duda y te ayudo.`
       return;
     }
 
-    // fallback
     s.state = "MENU";
     await sendText(waid, `¿Te ayudo con algo más? Responde 1, 2 o 3 🙂`);
     console.log("[BOT] fallback -> MENU");
@@ -269,20 +263,20 @@ O dime tu duda y te ayudo.`
 });
 
 // === SmarterASP calls ===
-async function fetchInviteProfile(waid) {
+async function fetchInviteProfile(waid, base, key) {
   console.log("[SmarterASP][Invite] ENTER fetchInviteProfile waid =", waid);
 
-  if (!SMARTERASP_API_BASE || !SMARTERASP_API_KEY) {
+  if (!base || !key) {
     console.log("[SmarterASP] Missing base/key");
     return null;
   }
 
-  const url = `${SMARTERASP_API_BASE}/Api/WhatsApp/Invite?waid=${encodeURIComponent(waid)}`;
+  const url = `${base}/Api/WhatsApp/Invite?waid=${encodeURIComponent(waid)}`;
 
   let resp;
   let text;
   try {
-    resp = await fetch(url, { headers: { "X-API-KEY": SMARTERASP_API_KEY } });
+    resp = await fetch(url, { headers: { "X-API-KEY": key } });
     text = await resp.text();
   } catch (e) {
     console.log("[SmarterASP][Invite] Network error:", e?.message || e);
@@ -303,15 +297,15 @@ async function fetchInviteProfile(waid) {
   }
 }
 
-async function postRsvpToSmarterAsp(payload) {
+async function postRsvpToSmarterAsp(payload, base, key) {
   console.log("[SmarterASP][RSVP] ENTER postRsvpToSmarterAsp payload =", payload);
 
-  if (!SMARTERASP_API_BASE || !SMARTERASP_API_KEY) {
+  if (!base || !key) {
     console.log("[SmarterASP] Missing base/key");
     return;
   }
 
-  const url = `${SMARTERASP_API_BASE}/Api/WhatsApp/RSVP`;
+  const url = `${base}/Api/WhatsApp/RSVP`;
 
   let resp;
   let text;
@@ -319,7 +313,7 @@ async function postRsvpToSmarterAsp(payload) {
     resp = await fetch(url, {
       method: "POST",
       headers: {
-        "X-API-KEY": SMARTERASP_API_KEY,
+        "X-API-KEY": key,
         "Content-Type": "application/json"
       },
       body: JSON.stringify(payload)
