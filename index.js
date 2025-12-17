@@ -11,6 +11,9 @@ const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 let SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE; // requerido
 const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
+// NUEVO: Key para proteger /broadcast/*
+const RENDER_BOT_API_KEY = process.env.RENDER_BOT_API_KEY;
+
 const DEBUG_RESET_SESSION = (process.env.DEBUG_RESET_SESSION || "").trim() === "1";
 
 // (opcional) fallback si no está definida
@@ -28,8 +31,14 @@ if (SMARTERASP_API_BASE && SMARTERASP_API_BASE.endsWith("/")) {
 
 const sessions = new Map();
 
+// Estado del broadcast (en memoria)
+let broadcastJob = null;
+
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
 
+/** =========================
+ *  WEBHOOK META
+ *  ========================= */
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -262,7 +271,147 @@ O dime tu duda y te ayudo.`
   }
 });
 
-// === SmarterASP calls ===
+/** =========================
+ *  BROADCAST (ENVÍO MASIVO DE PLANTILLAS)
+ *  ========================= */
+
+// Auth helper para broadcast
+function assertBroadcastAuth(req, res) {
+  if (!RENDER_BOT_API_KEY) {
+    res.status(500).json({ ok: false, error: "Missing RENDER_BOT_API_KEY in Render env" });
+    return false;
+  }
+
+  const key = (req.headers["x-api-key"] || req.headers["x-api-key".toLowerCase()] || "").toString().trim();
+  if (!key || key !== RENDER_BOT_API_KEY) {
+    res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    return false;
+  }
+  return true;
+}
+
+// Status del envío
+app.get("/broadcast/status", (req, res) => {
+  if (!assertBroadcastAuth(req, res)) return;
+
+  if (!broadcastJob) return res.json({ ok: true, running: false });
+
+  res.json({ ok: true, running: broadcastJob.running, job: broadcastJob });
+});
+
+// Iniciar envío masivo
+// POST /broadcast/start
+// Headers: X-Api-Key: <RENDER_BOT_API_KEY>
+// Body JSON:
+// {
+//   "fromId": 1,
+//   "toId": 150,
+//   "templateName": "ed_invitation_initial",
+//   "languageCode": "en",
+//   "batchSize": 20,
+//   "pauseSeconds": 45
+// }
+app.post("/broadcast/start", async (req, res) => {
+  if (!assertBroadcastAuth(req, res)) return;
+
+  if (!WA_TOKEN || !PHONE_NUMBER_ID) {
+    return res.status(500).json({ ok: false, error: "Missing WA_TOKEN or PHONE_NUMBER_ID" });
+  }
+  if (!SMARTERASP_API_BASE || !SMARTERASP_API_KEY) {
+    return res.status(500).json({ ok: false, error: "Missing SMARTERASP_API_BASE or SMARTERASP_API_KEY" });
+  }
+
+  const fromId = Number(req.body?.fromId || 1);
+  const toId = Number(req.body?.toId || fromId);
+  const templateName = (req.body?.templateName || "").trim();
+  const languageCode = (req.body?.languageCode || "").trim();
+  const batchSize = Math.max(1, Number(req.body?.batchSize || 20));
+  const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds || 45));
+
+  // Defaults basados en tus plantillas
+  const tpl = templateName || "ed_invitation_initial";
+  const lang =
+    languageCode ||
+    (tpl === "ed_invitation_initial" ? "en" : "es_MX"); // tu reminder es Spanish (MEX)
+
+  if (broadcastJob?.running) {
+    return res.status(409).json({ ok: false, error: "A broadcast is already running" });
+  }
+
+  // 1) Obtener recipients desde SmarterASP
+  const recipients = await fetchRecipients(fromId, toId, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
+
+  if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+    return res.status(404).json({ ok: false, error: "No recipients returned from SmarterASP" });
+  }
+
+  // 2) Crear job en memoria y arrancarlo async
+  broadcastJob = {
+    running: true,
+    startedAt: new Date().toISOString(),
+    fromId,
+    toId,
+    templateName: tpl,
+    languageCode: lang,
+    batchSize,
+    pauseSeconds,
+    total: recipients.length,
+    sent: 0,
+    failed: 0,
+    lastError: null
+  };
+
+  // Responder rápido y continuar en background
+  res.json({ ok: true, message: "Broadcast started", job: broadcastJob });
+
+  // Ejecutar en background
+  (async () => {
+    try {
+      for (let i = 0; i < recipients.length; i++) {
+        const r = recipients[i];
+
+        // Esperamos que tu endpoint mande:
+        // r.to  -> ej "5218112275379"
+        // r.nombre -> ej "Esmeralda"
+        const to = (r?.to || "").toString().trim();
+        const nombre = (r?.nombre || "").toString().trim() || "👋";
+
+        if (!to) {
+          broadcastJob.failed++;
+          continue;
+        }
+
+        try {
+          await sendTemplate(to, tpl, lang, [nombre]); // {{1}} = Nombre
+          broadcastJob.sent++;
+        } catch (e) {
+          broadcastJob.failed++;
+          broadcastJob.lastError = e?.message || String(e);
+          console.log("[BROADCAST] Send error:", broadcastJob.lastError);
+        }
+
+        // Control por bloques
+        const isEndOfBatch = ((i + 1) % batchSize === 0) && (i + 1 < recipients.length);
+        if (isEndOfBatch && pauseSeconds > 0) {
+          console.log(`[BROADCAST] batch pause ${pauseSeconds}s... sent=${broadcastJob.sent} failed=${broadcastJob.failed}`);
+          await sleep(pauseSeconds * 1000);
+        }
+      }
+    } catch (e) {
+      broadcastJob.lastError = e?.message || String(e);
+      console.log("[BROADCAST] Fatal error:", broadcastJob.lastError);
+    } finally {
+      broadcastJob.running = false;
+      broadcastJob.endedAt = new Date().toISOString();
+      console.log("[BROADCAST] DONE. sent=", broadcastJob.sent, "failed=", broadcastJob.failed);
+    }
+  })();
+});
+
+/** =========================
+ *  SmarterASP calls
+ *  ========================= */
+
 async function fetchInviteProfile(waid, base, key) {
   console.log("[SmarterASP][Invite] ENTER fetchInviteProfile waid =", waid);
 
@@ -329,7 +478,45 @@ async function postRsvpToSmarterAsp(payload, base, key) {
   console.log("[SmarterASP][RSVP] body:", text);
 }
 
-// === WA send ===
+// NUEVO: obtener recipients para broadcast
+async function fetchRecipients(fromId, toId, base, key) {
+  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId });
+
+  const url = `${base}/Api/WhatsApp/Recipients?fromId=${encodeURIComponent(fromId)}&toId=${encodeURIComponent(toId)}&onlyActive=true&onlyWithPhone=true`;
+
+  let resp;
+  let text;
+  try {
+    resp = await fetch(url, { headers: { "X-API-KEY": key } });
+    text = await resp.text();
+  } catch (e) {
+    console.log("[SmarterASP][Recipients] Network error:", e?.message || e);
+    return null;
+  }
+
+  console.log("[SmarterASP][Recipients] url:", url);
+  console.log("[SmarterASP][Recipients] status:", resp.status);
+
+  if (!resp.ok) {
+    console.log("[SmarterASP][Recipients] body:", text);
+    return null;
+  }
+
+  try {
+    const json = JSON.parse(text);
+    const list = json?.recipients || [];
+    console.log("[SmarterASP][Recipients] count:", list.length);
+    return list;
+  } catch (e) {
+    console.log("[SmarterASP][Recipients] JSON parse error:", e?.message || e);
+    return null;
+  }
+}
+
+/** =========================
+ *  WA send (Text + Template)
+ *  ========================= */
+
 async function sendText(to, message) {
   if (!WA_TOKEN || !PHONE_NUMBER_ID) {
     console.error("Faltan variables WA_TOKEN o PHONE_NUMBER_ID");
@@ -355,7 +542,56 @@ async function sendText(to, message) {
   });
 
   const data = await resp.json();
-  console.log("Send response:", resp.status, data);
+  console.log("SendText response:", resp.status, data);
+
+  if (!resp.ok) {
+    throw new Error(`sendText failed: ${resp.status} ${JSON.stringify(data)}`);
+  }
+}
+
+// NUEVO: envío de plantilla (template)
+// vars[0] -> {{1}} (Nombre)
+async function sendTemplate(to, templateName, languageCode, vars = []) {
+  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+
+  const components = [];
+  if (vars && vars.length > 0) {
+    components.push({
+      type: "body",
+      parameters: vars.map(v => ({ type: "text", text: String(v) }))
+    });
+  }
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name: templateName,
+      language: { code: languageCode },
+      ...(components.length ? { components } : {})
+    }
+  };
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${WA_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await resp.json();
+  console.log("SendTemplate response:", resp.status, data);
+
+  if (!resp.ok) {
+    throw new Error(`sendTemplate failed: ${resp.status} ${JSON.stringify(data)}`);
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 const port = process.env.PORT || 3000;
