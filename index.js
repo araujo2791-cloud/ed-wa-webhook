@@ -7,16 +7,15 @@ console.log("BOOTING APP - index.js - BUILD:", new Date().toISOString());
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ED_WA_Verify_2025";
 const WA_TOKEN = process.env.WA_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+const WABA_ID = process.env.WABA_ID;
 
-let SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE; // requerido
+let SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE;
 const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
-// NUEVO: Key para proteger /broadcast/*
 const RENDER_BOT_API_KEY = process.env.RENDER_BOT_API_KEY;
 
 const DEBUG_RESET_SESSION = (process.env.DEBUG_RESET_SESSION || "").trim() === "1";
 
-// (opcional) fallback si no está definida
 if (!SMARTERASP_API_BASE) {
   SMARTERASP_API_BASE = process.env.SMARTERASP_API_BASE_FALLBACK;
   if (SMARTERASP_API_BASE) {
@@ -24,17 +23,27 @@ if (!SMARTERASP_API_BASE) {
   }
 }
 
-// limpiar slash final si lo ponen
 if (SMARTERASP_API_BASE && SMARTERASP_API_BASE.endsWith("/")) {
   SMARTERASP_API_BASE = SMARTERASP_API_BASE.slice(0, -1);
 }
 
 const sessions = new Map();
-
-// Estado del broadcast (en memoria)
 let broadcastJob = null;
 
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
+
+function assertBroadcastAuth(req, res) {
+  if (!RENDER_BOT_API_KEY) {
+    res.status(500).json({ ok: false, error: "Missing RENDER_BOT_API_KEY in Render env" });
+    return false;
+  }
+  const key = (req.headers["x-api-key"] || "").toString().trim();
+  if (!key || key !== RENDER_BOT_API_KEY) {
+    res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
+    return false;
+  }
+  return true;
+}
 
 /** =========================
  *  WEBHOOK META
@@ -55,7 +64,6 @@ app.post("/webhook", async (req, res) => {
 
   try {
     const body = req.body;
-
     const entry = body?.entry?.[0];
     const changes = entry?.changes?.[0];
     const value = changes?.value;
@@ -86,9 +94,6 @@ app.post("/webhook", async (req, res) => {
       sessions.set(waid, s);
     }
 
-    console.log("[BOT] state:", s.state);
-    console.log("[BOT] hasProfileBefore:", !!s.profile);
-
     if (!s.profile) {
       console.log("[BOT] calling fetchInviteProfile...");
       s.profile = await fetchInviteProfile(waid, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
@@ -97,7 +102,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!s.profile) {
       await sendText(waid, "Hola 👋 No encontré tu invitación con este número. Por favor comunícate con Eduardo o Dina para apoyarte.");
-      console.log("=================================");
       return;
     }
 
@@ -119,15 +123,12 @@ app.post("/webhook", async (req, res) => {
 3) Ayuda`
       );
       s.state = "MENU";
-      console.log("[BOT] state -> MENU");
-      console.log("=================================");
       return;
     }
 
     if (s.state === "MENU") {
-      if (input === "1") {
+      if (input === "1" || input.toUpperCase() === "INVITACION") {
         await sendText(waid, `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`);
-        console.log("=================================");
         return;
       }
       if (input === "2") {
@@ -140,8 +141,6 @@ app.post("/webhook", async (req, res) => {
 2) Lo siento, no podré`
         );
         s.state = "RSVP_ASISTE";
-        console.log("[BOT] state -> RSVP_ASISTE");
-        console.log("=================================");
         return;
       }
       if (input === "3" || input.toUpperCase() === "AYUDA") {
@@ -153,12 +152,10 @@ app.post("/webhook", async (req, res) => {
 
 O dime tu duda y te ayudo.`
         );
-        console.log("=================================");
         return;
       }
 
       await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
-      console.log("=================================");
       return;
     }
 
@@ -167,8 +164,6 @@ O dime tu duda y te ayudo.`
         s.temp.asistira = true;
         await sendText(waid, `Genial 🎉 ¿Cuántos invitados confirmas? (1 a ${cupo})`);
         s.state = "RSVP_NUM";
-        console.log("[BOT] state -> RSVP_NUM");
-        console.log("=================================");
         return;
       }
       if (input === "2") {
@@ -183,13 +178,10 @@ O dime tu duda y te ayudo.`
         await sendText(waid, `Gracias por avisarnos, ${nombre} 🙏 Si cambias de plan, aquí estaré.`);
         s.state = "MENU";
         s.temp = {};
-        console.log("[BOT] state -> MENU (no asiste)");
-        console.log("=================================");
         return;
       }
 
       await sendText(waid, `Responde 1 = Sí asistiré o 2 = No podré 🙂`);
-      console.log("=================================");
       return;
     }
 
@@ -197,7 +189,6 @@ O dime tu duda y te ayudo.`
       const n = parseInt(input, 10);
       if (!Number.isFinite(n) || n < 1 || n > cupo) {
         await sendText(waid, `Por favor envíame un número del 1 al ${cupo}.`);
-        console.log("=================================");
         return;
       }
 
@@ -212,8 +203,6 @@ O dime tu duda y te ayudo.`
 2) No, enviar sin mensaje`
       );
       s.state = "RSVP_MSG_DECIDE";
-      console.log("[BOT] state -> RSVP_MSG_DECIDE");
-      console.log("=================================");
       return;
     }
 
@@ -221,8 +210,6 @@ O dime tu duda y te ayudo.`
       if (input === "1") {
         await sendText(waid, "Escribe tu mensaje (máximo 500 caracteres) 🙂");
         s.state = "RSVP_MSG_WRITE";
-        console.log("[BOT] state -> RSVP_MSG_WRITE");
-        console.log("=================================");
         return;
       }
       if (input === "2") {
@@ -235,13 +222,10 @@ O dime tu duda y te ayudo.`
         await sendText(waid, `¡Listo! 🎉 Confirmación registrada.\n\nNos vemos en la boda 💛`);
         s.state = "MENU";
         s.temp = {};
-        console.log("[BOT] state -> MENU (asiste sin mensaje)");
-        console.log("=================================");
         return;
       }
 
       await sendText(waid, `Responde 1 = Escribir mensaje o 2 = Enviar sin mensaje 🙂`);
-      console.log("=================================");
       return;
     }
 
@@ -257,46 +241,51 @@ O dime tu duda y te ayudo.`
       await sendText(waid, `¡Gracias! 🎉 Confirmación registrada.\n\nMensaje recibido 💌`);
       s.state = "MENU";
       s.temp = {};
-      console.log("[BOT] state -> MENU (asiste con mensaje)");
-      console.log("=================================");
       return;
     }
 
     s.state = "MENU";
     await sendText(waid, `¿Te ayudo con algo más? Responde 1, 2 o 3 🙂`);
-    console.log("[BOT] fallback -> MENU");
-    console.log("=================================");
   } catch (e) {
     console.error("Webhook error:", e);
   }
 });
 
 /** =========================
- *  BROADCAST (ENVÍO MASIVO DE PLANTILLAS)
+ *  DEBUG: listar plantillas visibles para este token/WABA
+ *  GET /debug/templates?name=ed_invitation_initial
+ *  Header: X-Api-Key: RENDER_BOT_API_KEY
  *  ========================= */
+app.get("/debug/templates", async (req, res) => {
+  if (!assertBroadcastAuth(req, res)) return;
 
-function assertBroadcastAuth(req, res) {
-  if (!RENDER_BOT_API_KEY) {
-    res.status(500).json({ ok: false, error: "Missing RENDER_BOT_API_KEY in Render env" });
-    return false;
+  if (!WA_TOKEN) return res.status(500).json({ ok: false, error: "Missing WA_TOKEN" });
+  if (!WABA_ID) return res.status(500).json({ ok: false, error: "Missing WABA_ID" });
+
+  const name = (req.query?.name || "").toString().trim();
+  const baseUrl = `https://graph.facebook.com/v21.0/${WABA_ID}/message_templates`;
+  const url = name ? `${baseUrl}?name=${encodeURIComponent(name)}` : baseUrl;
+
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${WA_TOKEN}` }
+    });
+    const data = await resp.json();
+    return res.status(resp.ok ? 200 : resp.status).json({ ok: resp.ok, url, data });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
+});
 
-  const key = (req.headers["x-api-key"] || "").toString().trim();
-  if (!key || key !== RENDER_BOT_API_KEY) {
-    res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
-    return false;
-  }
-  return true;
-}
-
+/** =========================
+ *  BROADCAST
+ *  ========================= */
 app.get("/broadcast/status", (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
   if (!broadcastJob) return res.json({ ok: true, running: false });
   res.json({ ok: true, running: broadcastJob.running, job: broadcastJob });
 });
 
-// POST /broadcast/start
-// Headers: X-Api-Key: <RENDER_BOT_API_KEY>
 app.post("/broadcast/start", async (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
 
@@ -307,21 +296,21 @@ app.post("/broadcast/start", async (req, res) => {
     return res.status(500).json({ ok: false, error: "Missing SMARTERASP_API_BASE or SMARTERASP_API_KEY" });
   }
 
-  const fromId = Number(req.body?.fromId || 1);
-  const toId = Number(req.body?.toId || fromId);
+  const fromId = Number(req.body?.fromId ?? 1);
+  const toId = Number(req.body?.toId ?? fromId);
+
   const templateName = (req.body?.templateName || "").trim();
   const languageCode = (req.body?.languageCode || "").trim();
-  const batchSize = Math.max(1, Number(req.body?.batchSize || 20));
-  const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds || 45));
 
-  // filtros
+  const batchSize = Math.max(1, Number(req.body?.batchSize ?? 20));
+  const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds ?? 45));
+
   const onlyNotConfirmed = (req.body?.onlyNotConfirmed === true);
-  const minDaysSinceInitial = Math.max(0, Number(req.body?.minDaysSinceInitial || 0));
+  const minDaysSinceInitial = Math.max(0, Number(req.body?.minDaysSinceInitial ?? 0));
   const initialTemplateName = (req.body?.initialTemplateName || "ed_invitation_initial").trim();
 
-  // Defaults por tus plantillas
   const tpl = templateName || "ed_invitation_initial";
-  const lang = languageCode || (tpl === "ed_invitation_initial" ? "en" : "es_MX");
+  const lang = languageCode || (tpl === "ed_invitation_initial" ? "en_US" : "es_MX");
 
   if (broadcastJob?.running) {
     return res.status(409).json({ ok: false, error: "A broadcast is already running" });
@@ -366,8 +355,8 @@ app.post("/broadcast/start", async (req, res) => {
       for (let i = 0; i < recipients.length; i++) {
         const r = recipients[i];
 
-        const to = (r?.to || "").toString().trim();        // ej "52" + 10 dígitos
-        const nombre = (r?.nombre || "").toString().trim() || "👋"; // {{1}} = Nombre
+        const to = (r?.to || "").toString().trim();
+        const nombre = (r?.nombre || "").toString().trim() || "👋";
 
         if (!to) {
           broadcastJob.failed++;
@@ -427,55 +416,28 @@ app.post("/broadcast/start", async (req, res) => {
 /** =========================
  *  SmarterASP calls
  *  ========================= */
-
 async function fetchInviteProfile(waid, base, key) {
-  console.log("[SmarterASP][Invite] ENTER fetchInviteProfile waid =", waid);
-
-  if (!base || !key) {
-    console.log("[SmarterASP] Missing base/key");
-    return null;
-  }
+  if (!base || !key) return null;
 
   const url = `${base}/Api/WhatsApp/Invite?waid=${encodeURIComponent(waid)}`;
 
-  let resp;
-  let text;
   try {
-    resp = await fetch(url, { headers: { "X-API-KEY": key } });
-    text = await resp.text();
-  } catch (e) {
-    console.log("[SmarterASP][Invite] Network error:", e?.message || e);
-    return null;
-  }
-
-  console.log("[SmarterASP][Invite] url:", url);
-  console.log("[SmarterASP][Invite] status:", resp.status);
-  console.log("[SmarterASP][Invite] body:", text);
-
-  if (!resp.ok) return null;
-
-  try {
+    const resp = await fetch(url, { headers: { "X-API-KEY": key } });
+    const text = await resp.text();
+    if (!resp.ok) return null;
     return JSON.parse(text);
-  } catch (e) {
-    console.log("[SmarterASP][Invite] JSON parse error:", e?.message || e);
+  } catch {
     return null;
   }
 }
 
 async function postRsvpToSmarterAsp(payload, base, key) {
-  console.log("[SmarterASP][RSVP] ENTER postRsvpToSmarterAsp payload =", payload);
-
-  if (!base || !key) {
-    console.log("[SmarterASP] Missing base/key");
-    return;
-  }
+  if (!base || !key) return;
 
   const url = `${base}/Api/WhatsApp/RSVP`;
 
-  let resp;
-  let text;
   try {
-    resp = await fetch(url, {
+    await fetch(url, {
       method: "POST",
       headers: {
         "X-API-KEY": key,
@@ -483,21 +445,10 @@ async function postRsvpToSmarterAsp(payload, base, key) {
       },
       body: JSON.stringify(payload)
     });
-    text = await resp.text();
-  } catch (e) {
-    console.log("[SmarterASP][RSVP] Network error:", e?.message || e);
-    return;
-  }
-
-  console.log("[SmarterASP][RSVP] url:", url);
-  console.log("[SmarterASP][RSVP] status:", resp.status);
-  console.log("[SmarterASP][RSVP] body:", text);
+  } catch {}
 }
 
-// Recipients con filtros
 async function fetchRecipients(fromId, toId, onlyNotConfirmed, minDaysSinceInitial, initialTemplateName, base, key) {
-  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId, onlyNotConfirmed, minDaysSinceInitial, initialTemplateName });
-
   const url =
     `${base}/Api/WhatsApp/Recipients?fromId=${encodeURIComponent(fromId)}&toId=${encodeURIComponent(toId)}` +
     `&onlyActive=true&onlyWithPhone=true` +
@@ -505,40 +456,21 @@ async function fetchRecipients(fromId, toId, onlyNotConfirmed, minDaysSinceIniti
     `&minDaysSinceInitial=${encodeURIComponent(minDaysSinceInitial)}` +
     `&initialTemplateName=${encodeURIComponent(initialTemplateName)}`;
 
-  let resp;
-  let text;
   try {
-    resp = await fetch(url, { headers: { "X-API-KEY": key } });
-    text = await resp.text();
-  } catch (e) {
-    console.log("[SmarterASP][Recipients] Network error:", e?.message || e);
-    return null;
-  }
-
-  console.log("[SmarterASP][Recipients] url:", url);
-  console.log("[SmarterASP][Recipients] status:", resp.status);
-
-  if (!resp.ok) {
-    console.log("[SmarterASP][Recipients] body:", text);
-    return null;
-  }
-
-  try {
+    const resp = await fetch(url, { headers: { "X-API-KEY": key } });
+    const text = await resp.text();
+    if (!resp.ok) return null;
     const json = JSON.parse(text);
-    const list = json?.recipients || [];
-    console.log("[SmarterASP][Recipients] count:", list.length);
-    return list;
-  } catch (e) {
-    console.log("[SmarterASP][Recipients] JSON parse error:", e?.message || e);
+    return json?.recipients || [];
+  } catch {
     return null;
   }
 }
 
 async function postLogToSmarterAsp(payload, base, key) {
   const url = `${base}/Api/WhatsApp/Log`;
-
   try {
-    const resp = await fetch(url, {
+    await fetch(url, {
       method: "POST",
       headers: {
         "X-API-KEY": key,
@@ -546,25 +478,14 @@ async function postLogToSmarterAsp(payload, base, key) {
       },
       body: JSON.stringify(payload)
     });
-    const text = await resp.text();
-    if (!resp.ok) {
-      console.log("[SmarterASP][Log] status:", resp.status, "body:", text);
-    }
-  } catch (e) {
-    console.log("[SmarterASP][Log] Network error:", e?.message || e);
-  }
+  } catch {}
 }
 
 /** =========================
  *  WA send
  *  ========================= */
-
 async function sendText(to, message) {
-  if (!WA_TOKEN || !PHONE_NUMBER_ID) {
-    console.error("Faltan variables WA_TOKEN o PHONE_NUMBER_ID");
-    return;
-  }
-
+  if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
 
   const payload = {
@@ -577,24 +498,18 @@ async function sendText(to, message) {
   const resp = await fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${WA_TOKEN}`,
+      Authorization: `Bearer ${WA_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
   });
 
   const data = await resp.json();
-  console.log("SendText response:", resp.status, data);
-
-  if (!resp.ok) {
-    throw new Error(`sendText failed: ${resp.status} ${JSON.stringify(data)}`);
-  }
+  if (!resp.ok) throw new Error(`sendText failed: ${resp.status} ${JSON.stringify(data)}`);
 }
 
-// Envío de plantilla (template) y regresa wamid
 async function sendTemplate(to, templateName, languageCode, vars = []) {
   if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
-
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
 
   const components = [];
@@ -619,18 +534,14 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
   const resp = await fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${WA_TOKEN}`,
+      Authorization: `Bearer ${WA_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
   });
 
   const data = await resp.json();
-  console.log("SendTemplate response:", resp.status, data);
-
-  if (!resp.ok) {
-    throw new Error(`sendTemplate failed: ${resp.status} ${JSON.stringify(data)}`);
-  }
+  if (!resp.ok) throw new Error(`sendTemplate failed: ${resp.status} ${JSON.stringify(data)}`);
 
   const wamid = data?.messages?.[0]?.id || null;
   return { wamid, raw: data };
