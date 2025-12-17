@@ -275,14 +275,13 @@ O dime tu duda y te ayudo.`
  *  BROADCAST (ENVÍO MASIVO DE PLANTILLAS)
  *  ========================= */
 
-// Auth helper para broadcast
 function assertBroadcastAuth(req, res) {
   if (!RENDER_BOT_API_KEY) {
     res.status(500).json({ ok: false, error: "Missing RENDER_BOT_API_KEY in Render env" });
     return false;
   }
 
-  const key = (req.headers["x-api-key"] || req.headers["x-api-key".toLowerCase()] || "").toString().trim();
+  const key = (req.headers["x-api-key"] || "").toString().trim();
   if (!key || key !== RENDER_BOT_API_KEY) {
     res.status(401).json({ ok: false, error: "UNAUTHORIZED" });
     return false;
@@ -290,27 +289,14 @@ function assertBroadcastAuth(req, res) {
   return true;
 }
 
-// Status del envío
 app.get("/broadcast/status", (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
-
   if (!broadcastJob) return res.json({ ok: true, running: false });
-
   res.json({ ok: true, running: broadcastJob.running, job: broadcastJob });
 });
 
-// Iniciar envío masivo
 // POST /broadcast/start
 // Headers: X-Api-Key: <RENDER_BOT_API_KEY>
-// Body JSON:
-// {
-//   "fromId": 1,
-//   "toId": 150,
-//   "templateName": "ed_invitation_initial",
-//   "languageCode": "en",
-//   "batchSize": 20,
-//   "pauseSeconds": 45
-// }
 app.post("/broadcast/start", async (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
 
@@ -327,26 +313,34 @@ app.post("/broadcast/start", async (req, res) => {
   const languageCode = (req.body?.languageCode || "").trim();
   const batchSize = Math.max(1, Number(req.body?.batchSize || 20));
   const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds || 45));
-  const onlyNotConfirmed = (req.body?.onlyNotConfirmed === true);
 
-  // Defaults basados en tus plantillas
+  // filtros
+  const onlyNotConfirmed = (req.body?.onlyNotConfirmed === true);
+  const minDaysSinceInitial = Math.max(0, Number(req.body?.minDaysSinceInitial || 0));
+  const initialTemplateName = (req.body?.initialTemplateName || "ed_invitation_initial").trim();
+
+  // Defaults por tus plantillas
   const tpl = templateName || "ed_invitation_initial";
-  const lang =
-    languageCode ||
-    (tpl === "ed_invitation_initial" ? "en" : "es_MX"); // tu reminder es Spanish (MEX)
+  const lang = languageCode || (tpl === "ed_invitation_initial" ? "en" : "es_MX");
 
   if (broadcastJob?.running) {
     return res.status(409).json({ ok: false, error: "A broadcast is already running" });
   }
 
-  // 1) Obtener recipients desde SmarterASP
-  const recipients = await fetchRecipients(fromId, toId, onlyNotConfirmed, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
+  const recipients = await fetchRecipients(
+    fromId,
+    toId,
+    onlyNotConfirmed,
+    minDaysSinceInitial,
+    initialTemplateName,
+    SMARTERASP_API_BASE,
+    SMARTERASP_API_KEY
+  );
 
   if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
     return res.status(404).json({ ok: false, error: "No recipients returned from SmarterASP" });
   }
 
-  // 2) Crear job en memoria y arrancarlo async
   broadcastJob = {
     running: true,
     startedAt: new Date().toISOString(),
@@ -356,26 +350,24 @@ app.post("/broadcast/start", async (req, res) => {
     languageCode: lang,
     batchSize,
     pauseSeconds,
+    onlyNotConfirmed,
+    minDaysSinceInitial,
+    initialTemplateName,
     total: recipients.length,
     sent: 0,
     failed: 0,
     lastError: null
   };
 
-  // Responder rápido y continuar en background
   res.json({ ok: true, message: "Broadcast started", job: broadcastJob });
 
-  // Ejecutar en background
   (async () => {
     try {
       for (let i = 0; i < recipients.length; i++) {
         const r = recipients[i];
 
-        // Esperamos que tu endpoint mande:
-        // r.to  -> ej "5218112275379"
-        // r.nombre -> ej "Esmeralda"
-        const to = (r?.to || "").toString().trim();
-        const nombre = (r?.nombre || "").toString().trim() || "👋";
+        const to = (r?.to || "").toString().trim();        // ej "52" + 10 dígitos
+        const nombre = (r?.nombre || "").toString().trim() || "👋"; // {{1}} = Nombre
 
         if (!to) {
           broadcastJob.failed++;
@@ -383,15 +375,38 @@ app.post("/broadcast/start", async (req, res) => {
         }
 
         try {
-          await sendTemplate(to, tpl, lang, [nombre]); // {{1}} = Nombre
+          const result = await sendTemplate(to, tpl, lang, [nombre]);
           broadcastJob.sent++;
+
+          await postLogToSmarterAsp({
+            usuarioId: r.usuarioId,
+            nombreUsuario: r.nombreUsuario,
+            waid: null,
+            phoneTo: to,
+            templateName: tpl,
+            languageCode: lang,
+            status: "SENT",
+            metaMessageId: result?.wamid || null,
+            error: ""
+          }, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
+
         } catch (e) {
           broadcastJob.failed++;
           broadcastJob.lastError = e?.message || String(e);
-          console.log("[BROADCAST] Send error:", broadcastJob.lastError);
+
+          await postLogToSmarterAsp({
+            usuarioId: r.usuarioId,
+            nombreUsuario: r.nombreUsuario,
+            waid: null,
+            phoneTo: to,
+            templateName: tpl,
+            languageCode: lang,
+            status: "FAILED",
+            metaMessageId: null,
+            error: broadcastJob.lastError
+          }, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
         }
 
-        // Control por bloques
         const isEndOfBatch = ((i + 1) % batchSize === 0) && (i + 1 < recipients.length);
         if (isEndOfBatch && pauseSeconds > 0) {
           console.log(`[BROADCAST] batch pause ${pauseSeconds}s... sent=${broadcastJob.sent} failed=${broadcastJob.failed}`);
@@ -479,13 +494,16 @@ async function postRsvpToSmarterAsp(payload, base, key) {
   console.log("[SmarterASP][RSVP] body:", text);
 }
 
-// NUEVO: obtener recipients para broadcast
-async function fetchRecipients(fromId, toId, onlyNotConfirmed, base, key) {
-  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId, onlyNotConfirmed });
+// Recipients con filtros
+async function fetchRecipients(fromId, toId, onlyNotConfirmed, minDaysSinceInitial, initialTemplateName, base, key) {
+  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId, onlyNotConfirmed, minDaysSinceInitial, initialTemplateName });
 
   const url =
     `${base}/Api/WhatsApp/Recipients?fromId=${encodeURIComponent(fromId)}&toId=${encodeURIComponent(toId)}` +
-    `&onlyActive=true&onlyWithPhone=true&onlyNotConfirmed=${onlyNotConfirmed ? "true" : "false"}`;
+    `&onlyActive=true&onlyWithPhone=true` +
+    `&onlyNotConfirmed=${onlyNotConfirmed ? "true" : "false"}` +
+    `&minDaysSinceInitial=${encodeURIComponent(minDaysSinceInitial)}` +
+    `&initialTemplateName=${encodeURIComponent(initialTemplateName)}`;
 
   let resp;
   let text;
@@ -516,8 +534,29 @@ async function fetchRecipients(fromId, toId, onlyNotConfirmed, base, key) {
   }
 }
 
+async function postLogToSmarterAsp(payload, base, key) {
+  const url = `${base}/Api/WhatsApp/Log`;
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": key,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    const text = await resp.text();
+    if (!resp.ok) {
+      console.log("[SmarterASP][Log] status:", resp.status, "body:", text);
+    }
+  } catch (e) {
+    console.log("[SmarterASP][Log] Network error:", e?.message || e);
+  }
+}
+
 /** =========================
- *  WA send (Text + Template)
+ *  WA send
  *  ========================= */
 
 async function sendText(to, message) {
@@ -552,9 +591,10 @@ async function sendText(to, message) {
   }
 }
 
-// NUEVO: envío de plantilla (template)
-// vars[0] -> {{1}} (Nombre)
+// Envío de plantilla (template) y regresa wamid
 async function sendTemplate(to, templateName, languageCode, vars = []) {
+  if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
+
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
 
   const components = [];
@@ -591,6 +631,9 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
   if (!resp.ok) {
     throw new Error(`sendTemplate failed: ${resp.status} ${JSON.stringify(data)}`);
   }
+
+  const wamid = data?.messages?.[0]?.id || null;
+  return { wamid, raw: data };
 }
 
 function sleep(ms) {
