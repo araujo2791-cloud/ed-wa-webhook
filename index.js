@@ -327,6 +327,7 @@ app.post("/broadcast/start", async (req, res) => {
   const languageCode = (req.body?.languageCode || "").trim();
   const batchSize = Math.max(1, Number(req.body?.batchSize || 20));
   const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds || 45));
+  const onlyNotConfirmed = (req.body?.onlyNotConfirmed === true);
 
   // Defaults basados en tus plantillas
   const tpl = templateName || "ed_invitation_initial";
@@ -339,7 +340,7 @@ app.post("/broadcast/start", async (req, res) => {
   }
 
   // 1) Obtener recipients desde SmarterASP
-  const recipients = await fetchRecipients(fromId, toId, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
+  const recipients = await fetchRecipients(fromId, toId, onlyNotConfirmed, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
 
   if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
     return res.status(404).json({ ok: false, error: "No recipients returned from SmarterASP" });
@@ -479,10 +480,12 @@ async function postRsvpToSmarterAsp(payload, base, key) {
 }
 
 // NUEVO: obtener recipients para broadcast
-async function fetchRecipients(fromId, toId, base, key) {
-  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId });
+async function fetchRecipients(fromId, toId, onlyNotConfirmed, base, key) {
+  console.log("[SmarterASP][Recipients] ENTER fetchRecipients", { fromId, toId, onlyNotConfirmed });
 
-  const url = `${base}/Api/WhatsApp/Recipients?fromId=${encodeURIComponent(fromId)}&toId=${encodeURIComponent(toId)}&onlyActive=true&onlyWithPhone=true`;
+  const url =
+    `${base}/Api/WhatsApp/Recipients?fromId=${encodeURIComponent(fromId)}&toId=${encodeURIComponent(toId)}` +
+    `&onlyActive=true&onlyWithPhone=true&onlyNotConfirmed=${onlyNotConfirmed ? "true" : "false"}`;
 
   let resp;
   let text;
