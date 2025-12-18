@@ -51,19 +51,23 @@ function assertBroadcastAuth(req, res) {
 function normalizeIntent(text) {
   const t = (text || "").toLowerCase().trim();
 
-  // INVITACIÓN
-  if (
-    t === "1" ||
-    t === "invitacion" || t === "invitación" ||
-    t.includes("ver invitacion") || t.includes("ver invitación") ||
-    t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
-    t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
-    t.includes("link") || t.includes("enlace") ||
-    t.includes("codigo") || t.includes("código") ||
-    t.includes("acceso")
-  ) {
-    return "INVITACION";
-  }
+  // INVITACIÓN (link + código de acceso)
+if (
+  t === "1" ||
+  t === "invitacion" || t === "invitación" ||
+  t.includes("ver invitacion") || t.includes("ver invitación") ||
+  t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
+  t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
+  t.includes("link de la invitacion") ||
+  t.includes("enlace de la invitacion") ||
+  t.includes("codigo de acceso") ||
+  t.includes("código de acceso") ||
+  t.includes("codigo de la invitacion") ||
+  t.includes("código de la invitación") ||
+  t.includes("acceso a la invitacion")
+) {
+  return "INVITACION";
+}
 
   // RSVP
   if (
