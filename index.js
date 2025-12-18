@@ -45,6 +45,70 @@ function assertBroadcastAuth(req, res) {
   return true;
 }
 
+// =========================
+// Intent Normalizer (MENÚ)
+// =========================
+function normalizeIntent(text) {
+  const t = (text || "").toLowerCase().trim();
+
+  // INVITACIÓN
+  if (
+    t === "1" ||
+    t === "invitacion" || t === "invitación" ||
+    t.includes("ver invitacion") || t.includes("ver invitación") ||
+    t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
+    t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
+    t.includes("link") || t.includes("enlace") ||
+    t.includes("codigo") || t.includes("código") ||
+    t.includes("acceso")
+  ) {
+    return "INVITACION";
+  }
+
+  // RSVP
+  if (
+    t === "2" ||
+    t.includes("confirmar") ||
+    t.includes("rsvp") ||
+    t.includes("asistencia")
+  ) {
+    return "RSVP";
+  }
+
+  // AYUDA / MENÚ
+  if (
+    t === "3" ||
+    t.includes("ayuda") ||
+    t.includes("menu") || t.includes("menú") ||
+    t.includes("opciones")
+  ) {
+    return "AYUDA";
+  }
+
+  return null;
+}
+
+async function callAssist(waid, mensaje) {
+  if (!SMARTERASP_API_BASE || !SMARTERASP_API_KEY) return null;
+
+  const url = `${SMARTERASP_API_BASE}/Api/WhatsApp/Assist`;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": SMARTERASP_API_KEY,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ waid, mensaje })
+    });
+    const text = await resp.text();
+    if (!resp.ok) return null;
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 /** =========================
  *  WEBHOOK META
  *  ========================= */
@@ -126,12 +190,17 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
+    // =========================
+    // MENU (PRIORIDAD A REGLAS)
+    // =========================
     if (s.state === "MENU") {
       const intent = normalizeIntent(input);
+
       if (intent === "INVITACION") {
         await sendText(waid, `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`);
         return;
       }
+
       if (intent === "RSVP") {
         await sendText(
           waid,
@@ -144,36 +213,34 @@ app.post("/webhook", async (req, res) => {
         s.state = "RSVP_ASISTE";
         return;
       }
+
       if (intent === "AYUDA") {
         await sendText(
           waid,
           `Claro 🙂 Responde con:
 1 = Ver invitación
 2 = Confirmar asistencia
+3 = Ayuda
 
 O dime tu duda y te ayudo.`
         );
         return;
       }
 
-      const assist = await fetch(`${SMARTERASP_API_BASE}/Api/WhatsApp/Assist`, {
-  method: "POST",
-  headers: {
-    "X-API-KEY": SMARTERASP_API_KEY,
-    "Content-Type": "application/json"
-  },
-  body: JSON.stringify({ waid, mensaje: input })
-}).then(r => r.json()).catch(() => null);
+      // ✅ SOLO SI NO ENTENDIÓ EL INTENT → ChatGPT (Assist)
+      const assist = await callAssist(waid, input);
+      if (assist?.ok && assist?.respuesta) {
+        await sendText(waid, assist.respuesta);
+        return;
+      }
 
-if (assist?.ok && assist?.respuesta) {
-  await sendText(waid, assist.respuesta);
-  return;
-}
-
-await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
+      await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
       return;
     }
 
+    // =========================
+    // RSVP FLOW (SIN IA)
+    // =========================
     if (s.state === "RSVP_ASISTE") {
       if (input === "1") {
         s.temp.asistira = true;
@@ -268,8 +335,6 @@ await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
 
 /** =========================
  *  DEBUG: listar plantillas visibles para este token/WABA
- *  GET /debug/templates?name=ed_invitation_initial
- *  Header: X-Api-Key: RENDER_BOT_API_KEY
  *  ========================= */
 app.get("/debug/templates", async (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
@@ -560,40 +625,6 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
 
   const wamid = data?.messages?.[0]?.id || null;
   return { wamid, raw: data };
-}
-
-function normalizeIntent(text) {
-  const t = (text || "").toLowerCase().trim();
-
-  if (
-    t === "1" ||
-    t.includes("ver invitacion") ||
-    t.includes("ver la invitacion") ||
-    t.includes("invitacion") ||
-    t.includes("ver invitación")
-  ) {
-    return "INVITACION";
-  }
-
-  if (
-    t === "2" ||
-    t.includes("confirmar") ||
-    t.includes("rsvp") ||
-    t.includes("asistencia")
-  ) {
-    return "RSVP";
-  }
-
-  if (
-    t === "3" ||
-    t.includes("ayuda") ||
-    t.includes("menu") ||
-    t.includes("menú")
-  ) {
-    return "AYUDA";
-  }
-
-  return null; // intención no reconocida
 }
 
 function sleep(ms) {
