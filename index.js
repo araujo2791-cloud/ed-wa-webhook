@@ -222,7 +222,8 @@ app.post("/webhook", async (req, res) => {
 2 = Confirmar asistencia
 3 = Ayuda
 
-O dime tu duda y te ayudo.`
+También te puedo dar información del horario y ubicación del evento, así como las opciones de regalos y recomendación de hospedaje.
+O dime tu duda, estoy para ayudarte.`
         );
         return;
       }
