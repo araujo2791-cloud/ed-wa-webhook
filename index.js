@@ -155,7 +155,21 @@ O dime tu duda y te ayudo.`
         return;
       }
 
-      await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
+      const assist = await fetch(`${SMARTERASP_API_BASE}/Api/WhatsApp/Assist`, {
+  method: "POST",
+  headers: {
+    "X-API-KEY": SMARTERASP_API_KEY,
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ waid, mensaje: input })
+}).then(r => r.json()).catch(() => null);
+
+if (assist?.ok && assist?.respuesta) {
+  await sendText(waid, assist.respuesta);
+  return;
+}
+
+await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
       return;
     }
 
