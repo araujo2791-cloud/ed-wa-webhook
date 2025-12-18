@@ -220,7 +220,6 @@ app.post("/webhook", async (req, res) => {
           `Claro 🙂 Responde con:
 1 = Ver invitación
 2 = Confirmar asistencia
-3 = Ayuda
 
 También te puedo dar información del horario y ubicación del evento, así como las opciones de regalos y recomendación de hospedaje.
 O dime tu duda, estoy para ayudarte.`
