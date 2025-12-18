@@ -127,11 +127,12 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (s.state === "MENU") {
-      if (input === "1" || input.toUpperCase() === "INVITACION") {
+      const intent = normalizeIntent(input);
+      if (intent === "INVITACION") {
         await sendText(waid, `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`);
         return;
       }
-      if (input === "2") {
+      if (intent === "RSVP") {
         await sendText(
           waid,
           `Perfecto ✅
@@ -143,7 +144,7 @@ app.post("/webhook", async (req, res) => {
         s.state = "RSVP_ASISTE";
         return;
       }
-      if (input === "3" || input.toUpperCase() === "AYUDA") {
+      if (intent === "AYUDA") {
         await sendText(
           waid,
           `Claro 🙂 Responde con:
@@ -559,6 +560,40 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
 
   const wamid = data?.messages?.[0]?.id || null;
   return { wamid, raw: data };
+}
+
+function normalizeIntent(text) {
+  const t = (text || "").toLowerCase().trim();
+
+  if (
+    t === "1" ||
+    t.includes("ver invitacion") ||
+    t.includes("ver la invitacion") ||
+    t.includes("invitacion") ||
+    t.includes("ver invitación")
+  ) {
+    return "INVITACION";
+  }
+
+  if (
+    t === "2" ||
+    t.includes("confirmar") ||
+    t.includes("rsvp") ||
+    t.includes("asistencia")
+  ) {
+    return "RSVP";
+  }
+
+  if (
+    t === "3" ||
+    t.includes("ayuda") ||
+    t.includes("menu") ||
+    t.includes("menú")
+  ) {
+    return "AYUDA";
+  }
+
+  return null; // intención no reconocida
 }
 
 function sleep(ms) {
