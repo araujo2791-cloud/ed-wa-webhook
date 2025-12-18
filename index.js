@@ -221,7 +221,7 @@ app.post("/webhook", async (req, res) => {
 1 = Ver invitación
 2 = Confirmar asistencia
 
-También te puedo dar información del horario y ubicación del evento, así como las opciones de regalos y recomendación de hospedaje.
+También te puedo dar información del horario y ubicación del evento, así como las opciones de mesa de regalo y recomendación de hospedaje.
 O dime tu duda, estoy para ayudarte.`
         );
         return;
