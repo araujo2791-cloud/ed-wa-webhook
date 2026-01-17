@@ -1,3 +1,5 @@
+// Render - index.js
+
 const express = require("express");
 const app = express();
 app.use(express.json({ type: "*/*" }));
@@ -52,22 +54,22 @@ function normalizeIntent(text) {
   const t = (text || "").toLowerCase().trim();
 
   // INVITACIÓN (link + código de acceso)
-if (
-  t === "1" ||
-  t === "invitacion" || t === "invitación" ||
-  t.includes("ver invitacion") || t.includes("ver invitación") ||
-  t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
-  t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
-  t.includes("link de la invitacion") ||
-  t.includes("enlace de la invitacion") ||
-  t.includes("codigo de acceso") ||
-  t.includes("código de acceso") ||
-  t.includes("codigo de la invitacion") ||
-  t.includes("código de la invitación") ||
-  t.includes("acceso a la invitacion")
-) {
-  return "INVITACION";
-}
+  if (
+    t === "1" ||
+    t === "invitacion" || t === "invitación" ||
+    t.includes("ver invitacion") || t.includes("ver invitación") ||
+    t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
+    t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
+    t.includes("link de la invitacion") ||
+    t.includes("enlace de la invitacion") ||
+    t.includes("codigo de acceso") ||
+    t.includes("código de acceso") ||
+    t.includes("codigo de la invitacion") ||
+    t.includes("código de la invitación") ||
+    t.includes("acceso a la invitacion")
+  ) {
+    return "INVITACION";
+  }
 
   // RSVP
   if (
@@ -113,6 +115,34 @@ async function callAssist(waid, mensaje) {
   }
 }
 
+// =========================
+// ✅ NUEVO: reenviar statuses a SmarterASP (DELIVERED/READ)
+// =========================
+async function postStatusToSmarterAsp(metaMessageId, status, base, key) {
+  if (!base || !key) return;
+
+  const url = `${base}/Api/WhatsApp/StatusUpdate`;
+
+  // Normalizamos a lo que guardas en SQL (SENT/DELIVERED/READ/FAILED)
+  const st = (status || "").toString().trim().toUpperCase();
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": key,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        metaMessageId: metaMessageId || "",
+        status: st
+      })
+    });
+  } catch (e) {
+    console.log("[STATUS->SMARTERASP] error:", e?.message || String(e));
+  }
+}
+
 /** =========================
  *  WEBHOOK META
  *  ========================= */
@@ -128,6 +158,7 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
+  // Meta requiere 200 rápido
   res.sendStatus(200);
 
   try {
@@ -136,6 +167,28 @@ app.post("/webhook", async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
+    // =========================
+    // ✅ 1) STATUS UPDATES (sent/delivered/read/failed)
+    // =========================
+    const statuses = value?.statuses;
+    if (Array.isArray(statuses) && statuses.length > 0) {
+      for (const st of statuses) {
+        const metaId = st?.id || null;         // wamid...
+        const status = st?.status || null;     // sent/delivered/read/failed
+
+        if (metaId && status) {
+          console.log("[WEBHOOK STATUS] id:", metaId, "status:", status);
+          await postStatusToSmarterAsp(metaId, status, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
+        }
+      }
+
+      // OJO: si fue solo status, no necesariamente viene messages
+      // seguimos por si también viene messages en el mismo payload
+    }
+
+    // =========================
+    // 2) MENSAJES ENTRANTES (tu bot)
+    // =========================
     const msg = value?.messages?.[0];
     if (!msg) return;
 
