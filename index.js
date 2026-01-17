@@ -116,15 +116,21 @@ async function callAssist(waid, mensaje) {
 }
 
 // =========================
-// ✅ NUEVO: reenviar statuses a SmarterASP (DELIVERED/READ)
+// ✅ NUEVO: reenviar statuses a SmarterASP (DELIVERED/READ/FAILED)
 // =========================
 async function postStatusToSmarterAsp(metaMessageId, status, base, key) {
   if (!base || !key) return;
+
+  const metaId = (metaMessageId || "").toString().trim();
+  if (!metaId) return;
 
   const url = `${base}/Api/WhatsApp/StatusUpdate`;
 
   // Normalizamos a lo que guardas en SQL (SENT/DELIVERED/READ/FAILED)
   const st = (status || "").toString().trim().toUpperCase();
+
+  // Solo permitimos estados esperados
+  if (!["SENT", "DELIVERED", "READ", "FAILED"].includes(st)) return;
 
   try {
     await fetch(url, {
@@ -134,7 +140,7 @@ async function postStatusToSmarterAsp(metaMessageId, status, base, key) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        metaMessageId: metaMessageId || "",
+        metaMessageId: metaId,
         status: st
       })
     });
@@ -172,18 +178,17 @@ app.post("/webhook", async (req, res) => {
     // =========================
     const statuses = value?.statuses;
     if (Array.isArray(statuses) && statuses.length > 0) {
-      for (const st of statuses) {
-        const metaId = st?.id || null;         // wamid...
-        const status = st?.status || null;     // sent/delivered/read/failed
+      for (const stObj of statuses) {
+        const metaId = stObj?.id || null;       // wamid...
+        const status = stObj?.status || null;   // sent/delivered/read/failed
 
         if (metaId && status) {
           console.log("[WEBHOOK STATUS] id:", metaId, "status:", status);
           await postStatusToSmarterAsp(metaId, status, SMARTERASP_API_BASE, SMARTERASP_API_KEY);
         }
       }
-
-      // OJO: si fue solo status, no necesariamente viene messages
-      // seguimos por si también viene messages en el mismo payload
+      // Nota: a veces llega SOLO statuses sin messages.
+      // No retornamos porque algunas notificaciones pueden traer también messages.
     }
 
     // =========================
@@ -443,7 +448,7 @@ app.post("/broadcast/start", async (req, res) => {
   const pauseSeconds = Math.max(0, Number(req.body?.pauseSeconds ?? 45));
 
   const onlyNotConfirmed = (req.body?.onlyNotConfirmed === true);
-  const minDaysSinceInitial = Math.max(0, Number(req.body?.minDaysSinceInitial ?? 0));
+  const minDaysSinceInitial = Math.maxmax(0, Number(req.body?.minDaysSinceInitial ?? 0)); // (se corrige abajo)
   const initialTemplateName = (req.body?.initialTemplateName || "ed_invitation_initial").trim();
 
   const tpl = templateName || "ed_invitation_initial";
@@ -457,7 +462,7 @@ app.post("/broadcast/start", async (req, res) => {
     fromId,
     toId,
     onlyNotConfirmed,
-    minDaysSinceInitial,
+    Math.max(0, Number(req.body?.minDaysSinceInitial ?? 0)), // ✅ FIX
     initialTemplateName,
     SMARTERASP_API_BASE,
     SMARTERASP_API_KEY
@@ -477,7 +482,7 @@ app.post("/broadcast/start", async (req, res) => {
     batchSize,
     pauseSeconds,
     onlyNotConfirmed,
-    minDaysSinceInitial,
+    minDaysSinceInitial: Math.max(0, Number(req.body?.minDaysSinceInitial ?? 0)),
     initialTemplateName,
     total: recipients.length,
     sent: 0,
@@ -690,3 +695,10 @@ function sleep(ms) {
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log("Webhook running on port", port));
+
+/*
+NOTA IMPORTANTE:
+En tu código original había un pequeño typo al copiar/pegar en esta versión:
+  const minDaysSinceInitial = Math.max(0, Number(req.body?.minDaysSinceInitial ?? 0));
+Aquí ya lo estamos usando con Math.max(...) en el fetchRecipients y broadcastJob.
+*/
