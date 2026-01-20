@@ -195,18 +195,24 @@ app.post("/webhook", async (req, res) => {
         if (errorText) console.log("[STATUS] error:", errorText);
 
         if (metaMessageId && status) {
+          const payload = {
+          metaMessageId,
+          status,
+          waid,
+          timestamp: Number.isFinite(ts) ? ts : null
+          };
+
+          // 👇 SOLO incluir error si realmente existe
+          if (errorText && errorText.length > 0) {
+          payload.error = errorText;
+          }
+
           await postStatusUpdateToSmarterAsp(
-            {
-              metaMessageId,
-              status,
-              waid,
-              timestamp: Number.isFinite(ts) ? ts : null,
-              error: errorText
-            },
-            SMARTERASP_API_BASE,
-            SMARTERASP_API_KEY
-          );
-        }
+          payload,
+          SMARTERASP_API_BASE,
+          SMARTERASP_API_KEY
+        );
+      }
       }
       return; // ya era status update; no es mensaje entrante
     }
