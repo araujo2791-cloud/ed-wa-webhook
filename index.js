@@ -57,6 +57,7 @@ if (
   t === "invitacion" || t === "invitación" ||
   t.includes("ver invitacion") || t.includes("ver invitación") ||
   t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
+  t.includes("mandar la invitacion") || t.includes("mandar la invitación") ||
   t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
   t.includes("link de la invitacion") ||
   t.includes("enlace de la invitacion") ||
