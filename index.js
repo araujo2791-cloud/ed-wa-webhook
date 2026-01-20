@@ -120,7 +120,7 @@ async function callAssist(waid, mensaje) {
 async function postStatusUpdateToSmarterAsp(payload, base, key) {
   if (!base || !key) return;
 
-  const url = `${base}/Api/WhatsAppStatus/Update`;
+  const url = `${base}/Api/WhatsAppDelivery/Update`;
 
   // 🔎 DEBUG temporal
   console.log("[STATUS->ASP] POST", url, payload);
