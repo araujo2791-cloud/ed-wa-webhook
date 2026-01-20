@@ -344,7 +344,7 @@ También te puedo dar información del horario y ubicación o dresscode del even
           SMARTERASP_API_KEY
         );
 
-        await sendText(waid, `Gracias por avisarnos, ${nombre} 🙏 Si cambias de plan, aquí estaré.`);
+        await sendText(waid, `Gracias por avisarnos, ${nombre} 🙏`);
         s.state = "MENU";
         s.temp = {};
         return;
