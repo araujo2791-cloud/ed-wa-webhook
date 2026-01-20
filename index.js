@@ -52,23 +52,23 @@ function normalizeIntent(text) {
   const t = (text || "").toLowerCase().trim();
 
   // INVITACIÓN (link + código de acceso)
-if (
-  t === "1" ||
-  t === "invitacion" || t === "invitación" ||
-  t.includes("ver invitacion") || t.includes("ver invitación") ||
-  t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
-  t.includes("mandar la invitacion") || t.includes("mandar la invitación") ||
-  t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
-  t.includes("link de la invitacion") ||
-  t.includes("enlace de la invitacion") ||
-  t.includes("codigo de acceso") ||
-  t.includes("código de acceso") ||
-  t.includes("codigo de la invitacion") ||
-  t.includes("código de la invitación") ||
-  t.includes("acceso a la invitacion")
-) {
-  return "INVITACION";
-}
+  if (
+    t === "1" ||
+    t === "invitacion" || t === "invitación" ||
+    t.includes("ver invitacion") || t.includes("ver invitación") ||
+    t.includes("quiero ver la invitacion") || t.includes("quiero ver la invitación") ||
+    t.includes("mandar la invitacion") || t.includes("mandar la invitación") ||
+    t.includes("ver mi invitacion") || t.includes("ver mi invitación") ||
+    t.includes("link de la invitacion") ||
+    t.includes("enlace de la invitacion") ||
+    t.includes("codigo de acceso") ||
+    t.includes("código de acceso") ||
+    t.includes("codigo de la invitacion") ||
+    t.includes("código de la invitación") ||
+    t.includes("acceso a la invitacion")
+  ) {
+    return "INVITACION";
+  }
 
   // RSVP
   if (
@@ -115,6 +115,27 @@ async function callAssist(waid, mensaje) {
 }
 
 /** =========================
+ *  NUEVO: post status update a SmarterASP
+ *  ========================= */
+async function postStatusUpdateToSmarterAsp(payload, base, key) {
+  if (!base || !key) return;
+
+  // ✅ Nuevo endpoint en WeddingApp (lo creamos abajo)
+  const url = `${base}/Api/WhatsAppStatus/Update`;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": key,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch {}
+}
+
+/** =========================
  *  WEBHOOK META
  *  ========================= */
 app.get("/webhook", (req, res) => {
@@ -129,6 +150,7 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
+  // Meta requiere 200 rápido
   res.sendStatus(200);
 
   try {
@@ -137,6 +159,57 @@ app.post("/webhook", async (req, res) => {
     const changes = entry?.changes?.[0];
     const value = changes?.value;
 
+    if (!value) return;
+
+    // =========================
+    // ✅ 1) STATUS UPDATES (palomitas/visto)
+    // =========================
+    const statuses = value?.statuses;
+    if (Array.isArray(statuses) && statuses.length > 0) {
+      for (const st of statuses) {
+        const metaMessageId = st?.id || null; // wamid...
+        const status = (st?.status || "").toString().trim(); // sent|delivered|read|failed
+        const waid = st?.recipient_id || null;
+        const ts = st?.timestamp ? Number(st.timestamp) : null;
+
+        let errorText = "";
+        const errors = st?.errors;
+        if (Array.isArray(errors) && errors.length > 0) {
+          // guardamos el primer error resumido
+          const e0 = errors[0];
+          const code = e0?.code != null ? `code=${e0.code}` : "";
+          const title = e0?.title ? `title=${e0.title}` : "";
+          const msg = e0?.message ? `message=${e0.message}` : "";
+          errorText = [code, title, msg].filter(Boolean).join(" | ").slice(0, 500);
+        }
+
+        console.log("========== STATUS WEBHOOK ==========");
+        console.log("[STATUS] metaMessageId:", metaMessageId);
+        console.log("[STATUS] status:", status);
+        console.log("[STATUS] waid:", waid);
+        console.log("[STATUS] ts:", ts);
+        if (errorText) console.log("[STATUS] error:", errorText);
+
+        if (metaMessageId && status) {
+          await postStatusUpdateToSmarterAsp(
+            {
+              metaMessageId,
+              status,
+              waid,
+              timestamp: Number.isFinite(ts) ? ts : null,
+              error: errorText
+            },
+            SMARTERASP_API_BASE,
+            SMARTERASP_API_KEY
+          );
+        }
+      }
+      return; // ya era status update; no es mensaje entrante
+    }
+
+    // =========================
+    // 2) MENSAJES ENTRANTES (tu BOT)
+    // =========================
     const msg = value?.messages?.[0];
     if (!msg) return;
 
