@@ -120,8 +120,10 @@ async function callAssist(waid, mensaje) {
 async function postStatusUpdateToSmarterAsp(payload, base, key) {
   if (!base || !key) return;
 
-  // ✅ Nuevo endpoint en WeddingApp (lo creamos abajo)
   const url = `${base}/Api/WhatsAppStatus/Update`;
+
+  // 🔎 DEBUG temporal
+  console.log("[STATUS->ASP] POST", url, payload);
 
   try {
     await fetch(url, {
@@ -132,7 +134,9 @@ async function postStatusUpdateToSmarterAsp(payload, base, key) {
       },
       body: JSON.stringify(payload)
     });
-  } catch {}
+  } catch (err) {
+    console.error("[STATUS->ASP] ERROR", err);
+  }
 }
 
 /** =========================
