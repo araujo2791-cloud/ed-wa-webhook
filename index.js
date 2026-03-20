@@ -14,6 +14,10 @@ const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
 const RENDER_BOT_API_KEY = process.env.RENDER_BOT_API_KEY;
 
+// URL pública de la imagen del header para la plantilla ed_invitacion_ceremonia
+const CEREMONY_TEMPLATE_IMAGE_LINK =
+  (process.env.CEREMONY_TEMPLATE_IMAGE_LINK || "").trim();
+
 const DEBUG_RESET_SESSION = (process.env.DEBUG_RESET_SESSION || "").trim() === "1";
 
 if (!SMARTERASP_API_BASE) {
@@ -728,12 +732,15 @@ app.post("/broadcast/start", async (req, res) => {
         }
 
         try {
-          const templateVars =
-            tpl === "ed_invitacion_ceremonia"
-              ? { nombre: nombre }
-              : [nombre];
+          let templateVars = [nombre];
+          let headerImageLink = null;
 
-          const result = await sendTemplate(to, tpl, lang, templateVars);
+          if (tpl === "ed_invitacion_ceremonia") {
+            templateVars = { nombre: nombre };
+            headerImageLink = CEREMONY_TEMPLATE_IMAGE_LINK;
+          }
+
+          const result = await sendTemplate(to, tpl, lang, templateVars, headerImageLink);
           broadcastJob.sent++;
 
           await postLogToSmarterAsp({
@@ -871,11 +878,26 @@ async function sendText(to, message) {
   if (!resp.ok) throw new Error(`sendText failed: ${resp.status} ${JSON.stringify(data)}`);
 }
 
-async function sendTemplate(to, templateName, languageCode, vars = []) {
-  if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
-  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
-
+function buildTemplateComponents(templateName, vars, headerImageLink) {
   const components = [];
+
+  if (templateName === "ed_invitacion_ceremonia") {
+    if (!headerImageLink) {
+      throw new Error("Falta CEREMONY_TEMPLATE_IMAGE_LINK para la plantilla ed_invitacion_ceremonia");
+    }
+
+    components.push({
+      type: "header",
+      parameters: [
+        {
+          type: "image",
+          image: {
+            link: headerImageLink
+          }
+        }
+      ]
+    });
+  }
 
   if (Array.isArray(vars) && vars.length > 0) {
     components.push({
@@ -895,6 +917,15 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
       }))
     });
   }
+
+  return components;
+}
+
+async function sendTemplate(to, templateName, languageCode, vars = [], headerImageLink = null) {
+  if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
+  const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
+
+  const components = buildTemplateComponents(templateName, vars, headerImageLink);
 
   const payload = {
     messaging_product: "whatsapp",
