@@ -14,7 +14,6 @@ const SMARTERASP_API_KEY = process.env.SMARTERASP_API_KEY;
 
 const RENDER_BOT_API_KEY = process.env.RENDER_BOT_API_KEY;
 
-// URL pública de la imagen del header para la plantilla ed_invitacion_ceremonia
 const CEREMONY_TEMPLATE_IMAGE_LINK =
   (process.env.CEREMONY_TEMPLATE_IMAGE_LINK || "").trim();
 
@@ -58,6 +57,45 @@ function normalizeBasic(text) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function extractIncomingMessageText(msg) {
+  if (!msg) return "";
+
+  // Texto normal
+  if (msg?.text?.body) {
+    return String(msg.text.body).trim();
+  }
+
+  // Quick reply button / template button reply
+  if (msg?.button?.text) {
+    return String(msg.button.text).trim();
+  }
+
+  if (msg?.button?.payload) {
+    return String(msg.button.payload).trim();
+  }
+
+  // Interactive replies
+  if (msg?.interactive?.type === "button_reply") {
+    if (msg?.interactive?.button_reply?.title) {
+      return String(msg.interactive.button_reply.title).trim();
+    }
+    if (msg?.interactive?.button_reply?.id) {
+      return String(msg.interactive.button_reply.id).trim();
+    }
+  }
+
+  if (msg?.interactive?.type === "list_reply") {
+    if (msg?.interactive?.list_reply?.title) {
+      return String(msg.interactive.list_reply.title).trim();
+    }
+    if (msg?.interactive?.list_reply?.id) {
+      return String(msg.interactive.list_reply.id).trim();
+    }
+  }
+
+  return "";
+}
+
 function detectCeremonyAck(text) {
   const t = normalizeBasic(text);
 
@@ -78,6 +116,8 @@ function detectCeremonyAck(text) {
     t === "confirmada" ||
     t === "visto" ||
     t === "gracias recibido" ||
+    t === "ack_ceremonia" ||
+    t === "ceremony_ack" ||
     t.includes("confirmo de recibido") ||
     t.includes("confirmo recibido") ||
     t.includes("recibi") ||
@@ -335,11 +375,13 @@ app.post("/webhook", async (req, res) => {
     if (!msg) return;
 
     const waid = msg.from;
-    const text = (msg?.text?.body || "").trim();
+    const text = extractIncomingMessageText(msg);
 
     console.log("========== WEBHOOK HIT ==========");
     console.log("[BOT] waid:", waid);
+    console.log("[BOT] msg.type:", msg?.type || "");
     console.log("[BOT] text:", text);
+    console.log("[BOT] raw msg:", JSON.stringify(msg));
     console.log("[BOT] DEBUG_RESET_SESSION:", DEBUG_RESET_SESSION);
     console.log("[BOT] SMARTERASP_API_BASE:", SMARTERASP_API_BASE);
     console.log("[BOT] SMARTERASP_API_KEY exists:", !!SMARTERASP_API_KEY);
