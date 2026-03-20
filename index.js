@@ -139,9 +139,6 @@ function detectConversationIntent(text) {
   return "OTRO";
 }
 
-// =========================
-// Intent Normalizer (MENÚ)
-// =========================
 function normalizeIntent(text) {
   const t = (text || "").toLowerCase().trim();
 
@@ -283,9 +280,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!value) return;
 
-    // =========================
-    // 1) STATUS UPDATES
-    // =========================
     const statuses = value?.statuses;
     if (Array.isArray(statuses) && statuses.length > 0) {
       for (const st of statuses) {
@@ -333,9 +327,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // =========================
-    // 2) MENSAJES ENTRANTES
-    // =========================
     const msg = value?.messages?.[0];
     if (!msg) return;
 
@@ -399,9 +390,6 @@ app.post("/webhook", async (req, res) => {
 
     const input = text;
 
-    // =========================
-    // CONFIRMACIÓN DE RECIBIDO
-    // =========================
     if ((s.state === "NEW" || s.state === "MENU") && detectCeremonyAck(input)) {
       await sendTextAndLog(
         waid,
@@ -429,9 +417,6 @@ app.post("/webhook", async (req, res) => {
       return;
     }
 
-    // =========================
-    // MENU
-    // =========================
     if (s.state === "MENU") {
       const intent = normalizeIntent(input);
 
@@ -494,9 +479,6 @@ También te puedo dar información del horario y ubicación o dresscode del even
       return;
     }
 
-    // =========================
-    // RSVP FLOW
-    // =========================
     if (s.state === "RSVP_ASISTE") {
       if (input === "1") {
         s.temp.asistira = true;
@@ -746,7 +728,12 @@ app.post("/broadcast/start", async (req, res) => {
         }
 
         try {
-          const result = await sendTemplate(to, tpl, lang, [nombre]);
+          const templateVars =
+            tpl === "ed_invitacion_ceremonia"
+              ? { nombre: nombre }
+              : [nombre];
+
+          const result = await sendTemplate(to, tpl, lang, templateVars);
           broadcastJob.sent++;
 
           await postLogToSmarterAsp({
@@ -889,10 +876,23 @@ async function sendTemplate(to, templateName, languageCode, vars = []) {
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
 
   const components = [];
-  if (vars && vars.length > 0) {
+
+  if (Array.isArray(vars) && vars.length > 0) {
     components.push({
       type: "body",
-      parameters: vars.map(v => ({ type: "text", text: String(v) }))
+      parameters: vars.map(v => ({
+        type: "text",
+        text: String(v)
+      }))
+    });
+  } else if (vars && typeof vars === "object" && Object.keys(vars).length > 0) {
+    components.push({
+      type: "body",
+      parameters: Object.entries(vars).map(([key, value]) => ({
+        type: "text",
+        parameter_name: String(key),
+        text: String(value)
+      }))
     });
   }
 
