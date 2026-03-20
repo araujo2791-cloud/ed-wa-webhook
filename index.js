@@ -45,13 +45,106 @@ function assertBroadcastAuth(req, res) {
   return true;
 }
 
+function normalizeBasic(text) {
+  return (text || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function detectCeremonyAck(text) {
+  const t = normalizeBasic(text);
+
+  if (!t) return false;
+
+  return (
+    t === "recibido" ||
+    t === "recibida" ||
+    t === "de recibido" ||
+    t === "mensaje recibido" ||
+    t === "ok" ||
+    t === "ok gracias" ||
+    t === "enterado" ||
+    t === "enterada" ||
+    t === "ya vi" ||
+    t === "ya lo vi" ||
+    t === "confirmado" ||
+    t === "confirmada" ||
+    t === "visto" ||
+    t === "gracias recibido" ||
+    t.includes("confirmo de recibido") ||
+    t.includes("confirmo recibido") ||
+    t.includes("recibi") ||
+    t.includes("recibí")
+  );
+}
+
+function detectConversationIntent(text) {
+  const t = normalizeBasic(text);
+
+  if (!t) return "OTRO";
+
+  if (detectCeremonyAck(t)) return "CONFIRMACION_RECIBIDO";
+
+  if (
+    t === "1" ||
+    t === "invitacion" ||
+    t.includes("ver invitacion") ||
+    t.includes("quiero ver la invitacion") ||
+    t.includes("mandar la invitacion") ||
+    t.includes("ver mi invitacion") ||
+    t.includes("link de la invitacion") ||
+    t.includes("enlace de la invitacion") ||
+    t.includes("codigo de acceso") ||
+    t.includes("codigo de la invitacion") ||
+    t.includes("acceso a la invitacion")
+  ) {
+    return "INVITACION";
+  }
+
+  if (
+    t === "2" ||
+    t.includes("confirmar") ||
+    t.includes("rsvp") ||
+    t.includes("asistencia") ||
+    t.includes("si voy") ||
+    t.includes("sí voy") ||
+    t.includes("no voy")
+  ) {
+    return "RSVP";
+  }
+
+  if (
+    t === "3" ||
+    t.includes("ayuda") ||
+    t.includes("menu") ||
+    t.includes("opciones")
+  ) {
+    return "AYUDA";
+  }
+
+  if (
+    t === "hola" ||
+    t === "gracias" ||
+    t === "muchas gracias" ||
+    t === "perfecto" ||
+    t === "listo" ||
+    t === "va"
+  ) {
+    return "SALUDO";
+  }
+
+  return "OTRO";
+}
+
 // =========================
 // Intent Normalizer (MENÚ)
 // =========================
 function normalizeIntent(text) {
   const t = (text || "").toLowerCase().trim();
 
-  // INVITACIÓN (link + código de acceso)
   if (
     t === "1" ||
     t === "invitacion" || t === "invitación" ||
@@ -70,7 +163,6 @@ function normalizeIntent(text) {
     return "INVITACION";
   }
 
-  // RSVP
   if (
     t === "2" ||
     t.includes("confirmar") ||
@@ -80,7 +172,6 @@ function normalizeIntent(text) {
     return "RSVP";
   }
 
-  // AYUDA / MENÚ
   if (
     t === "3" ||
     t.includes("ayuda") ||
@@ -114,15 +205,11 @@ async function callAssist(waid, mensaje) {
   }
 }
 
-/** =========================
- *  NUEVO: post status update a SmarterASP
- *  ========================= */
 async function postStatusUpdateToSmarterAsp(payload, base, key) {
   if (!base || !key) return;
 
   const url = `${base}/Api/WhatsAppDelivery/Update`;
 
-  // 🔎 DEBUG temporal
   console.log("[STATUS->ASP] POST", url, payload);
 
   try {
@@ -139,9 +226,41 @@ async function postStatusUpdateToSmarterAsp(payload, base, key) {
   }
 }
 
-/** =========================
- *  WEBHOOK META
- *  ========================= */
+async function postConversationLogToSmarterAsp(payload, base, key) {
+  if (!base || !key) return;
+
+  const url = `${base}/Api/WhatsApp/ConversationLog`;
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "X-API-KEY": key,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch (err) {
+    console.error("[CONV->ASP] ERROR", err);
+  }
+}
+
+async function sendTextAndLog(waid, message, originalUserText = "", explicitIntent = null) {
+  await sendText(waid, message);
+
+  await postConversationLogToSmarterAsp(
+    {
+      waid,
+      mensajeUsuario: originalUserText || "(mensaje bot)",
+      respuestaBot: message,
+      tipoMensaje: "outbound",
+      intencionDetectada: explicitIntent || detectConversationIntent(originalUserText || message)
+    },
+    SMARTERASP_API_BASE,
+    SMARTERASP_API_KEY
+  );
+}
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -154,7 +273,6 @@ app.get("/webhook", (req, res) => {
 });
 
 app.post("/webhook", async (req, res) => {
-  // Meta requiere 200 rápido
   res.sendStatus(200);
 
   try {
@@ -166,20 +284,19 @@ app.post("/webhook", async (req, res) => {
     if (!value) return;
 
     // =========================
-    // ✅ 1) STATUS UPDATES (palomitas/visto)
+    // 1) STATUS UPDATES
     // =========================
     const statuses = value?.statuses;
     if (Array.isArray(statuses) && statuses.length > 0) {
       for (const st of statuses) {
-        const metaMessageId = st?.id || null; // wamid...
-        const status = (st?.status || "").toString().trim(); // sent|delivered|read|failed
+        const metaMessageId = st?.id || null;
+        const status = (st?.status || "").toString().trim();
         const waid = st?.recipient_id || null;
         const ts = st?.timestamp ? Number(st.timestamp) : null;
 
         let errorText = "";
         const errors = st?.errors;
         if (Array.isArray(errors) && errors.length > 0) {
-          // guardamos el primer error resumido
           const e0 = errors[0];
           const code = e0?.code != null ? `code=${e0.code}` : "";
           const title = e0?.title ? `title=${e0.title}` : "";
@@ -196,29 +313,28 @@ app.post("/webhook", async (req, res) => {
 
         if (metaMessageId && status) {
           const payload = {
-          metaMessageId,
-          status,
-          waid,
-          timestamp: Number.isFinite(ts) ? ts : null
+            metaMessageId,
+            status,
+            waid,
+            timestamp: Number.isFinite(ts) ? ts : null
           };
 
-          // 👇 SOLO incluir error si realmente existe
           if (errorText && errorText.length > 0) {
-          payload.error = errorText;
+            payload.error = errorText;
           }
 
           await postStatusUpdateToSmarterAsp(
-          payload,
-          SMARTERASP_API_BASE,
-          SMARTERASP_API_KEY
-        );
+            payload,
+            SMARTERASP_API_BASE,
+            SMARTERASP_API_KEY
+          );
+        }
       }
-      }
-      return; // ya era status update; no es mensaje entrante
+      return;
     }
 
     // =========================
-    // 2) MENSAJES ENTRANTES (tu BOT)
+    // 2) MENSAJES ENTRANTES
     // =========================
     const msg = value?.messages?.[0];
     if (!msg) return;
@@ -232,6 +348,20 @@ app.post("/webhook", async (req, res) => {
     console.log("[BOT] DEBUG_RESET_SESSION:", DEBUG_RESET_SESSION);
     console.log("[BOT] SMARTERASP_API_BASE:", SMARTERASP_API_BASE);
     console.log("[BOT] SMARTERASP_API_KEY exists:", !!SMARTERASP_API_KEY);
+
+    const incomingIntent = detectConversationIntent(text);
+
+    await postConversationLogToSmarterAsp(
+      {
+        waid,
+        mensajeUsuario: text || "(sin texto)",
+        respuestaBot: null,
+        tipoMensaje: "inbound",
+        intencionDetectada: incomingIntent
+      },
+      SMARTERASP_API_BASE,
+      SMARTERASP_API_KEY
+    );
 
     let s = sessions.get(waid);
 
@@ -253,7 +383,12 @@ app.post("/webhook", async (req, res) => {
     }
 
     if (!s.profile) {
-      await sendText(waid, "Hola 👋 No encontré tu invitación con este número. Por favor comunícate con Eduardo o Dina para apoyarte.");
+      await sendTextAndLog(
+        waid,
+        "Hola 👋 No encontré tu invitación con este número. Por favor comunícate con Eduardo o Dina para apoyarte.",
+        text,
+        incomingIntent
+      );
       return;
     }
 
@@ -264,77 +399,117 @@ app.post("/webhook", async (req, res) => {
 
     const input = text;
 
+    // =========================
+    // CONFIRMACIÓN DE RECIBIDO
+    // =========================
+    if ((s.state === "NEW" || s.state === "MENU") && detectCeremonyAck(input)) {
+      await sendTextAndLog(
+        waid,
+        `¡Gracias ${nombre}! ✅\n\nQueda confirmado que recibiste el aviso del cambio de ceremonia.\n\nSi necesitas ubicación o cualquier otro detalle, aquí estoy.`,
+        input,
+        "CONFIRMACION_RECIBIDO"
+      );
+      s.state = "MENU";
+      return;
+    }
+
     if (s.state === "NEW") {
-      await sendText(
+      await sendTextAndLog(
         waid,
         `Hola ${nombre} 👋 Soy *E&D Assistant*.
 
 ¿Qué te gustaría hacer?
 1) Ver invitación
 2) Confirmar asistencia (RSVP)
-3) Ayuda`
+3) Ayuda`,
+        input,
+        incomingIntent
       );
       s.state = "MENU";
       return;
     }
 
     // =========================
-    // MENU (PRIORIDAD A REGLAS)
+    // MENU
     // =========================
     if (s.state === "MENU") {
       const intent = normalizeIntent(input);
 
       if (intent === "INVITACION") {
-        await sendText(waid, `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`);
+        await sendTextAndLog(
+          waid,
+          `Aquí está tu invitación:\n${link}\n\nTu código de acceso es: *${code}*`,
+          input,
+          "INVITACION"
+        );
         return;
       }
 
       if (intent === "RSVP") {
-        await sendText(
+        await sendTextAndLog(
           waid,
           `Perfecto ✅
 ¿Podrás asistir?
 
 1) Sí asistiré
-2) Lo siento, no podré`
+2) Lo siento, no podré`,
+          input,
+          "RSVP"
         );
         s.state = "RSVP_ASISTE";
         return;
       }
 
       if (intent === "AYUDA") {
-        await sendText(
+        await sendTextAndLog(
           waid,
           `Claro 🙂 Responde con:
 1 = Ver invitación
 2 = Confirmar asistencia
 
-También te puedo dar información del horario y ubicación o dresscode del evento, así como las opciones de mesa de regalo y recomendación de hospedaje. O dime tu duda, estoy para ayudarte.`
+También te puedo dar información del horario y ubicación o dresscode del evento, así como las opciones de mesa de regalo y recomendación de hospedaje. O dime tu duda, estoy para ayudarte.`,
+          input,
+          "AYUDA"
         );
         return;
       }
 
-      // ✅ SOLO SI NO ENTENDIÓ EL INTENT → ChatGPT (Assist)
       const assist = await callAssist(waid, input);
       if (assist?.ok && assist?.respuesta) {
-        await sendText(waid, assist.respuesta);
+        await sendTextAndLog(
+          waid,
+          assist.respuesta,
+          input,
+          assist.intencion || incomingIntent
+        );
         return;
       }
 
-      await sendText(waid, `Para avanzar responde 1, 2 o 3 🙂`);
+      await sendTextAndLog(
+        waid,
+        `Para avanzar responde 1, 2 o 3 🙂`,
+        input,
+        incomingIntent
+      );
       return;
     }
 
     // =========================
-    // RSVP FLOW (SIN IA)
+    // RSVP FLOW
     // =========================
     if (s.state === "RSVP_ASISTE") {
       if (input === "1") {
         s.temp.asistira = true;
-        await sendText(waid, `Genial 🎉 ¿Cuántos invitados confirmas? (1 a ${cupo})`);
+        await sendTextAndLog(
+          waid,
+          `Genial 🎉 ¿Cuántos invitados confirmas? (1 a ${cupo})`,
+          input,
+          "RSVP"
+        );
         s.state = "RSVP_NUM";
         return;
       }
+
       if (input === "2") {
         s.temp.asistira = false;
 
@@ -344,32 +519,50 @@ También te puedo dar información del horario y ubicación o dresscode del even
           SMARTERASP_API_KEY
         );
 
-        await sendText(waid, `Gracias por avisarnos, ${nombre} 🙏`);
+        await sendTextAndLog(
+          waid,
+          `Gracias por avisarnos, ${nombre} 🙏`,
+          input,
+          "RSVP"
+        );
+
         s.state = "MENU";
         s.temp = {};
         return;
       }
 
-      await sendText(waid, `Responde 1 = Sí asistiré o 2 = No podré 🙂`);
+      await sendTextAndLog(
+        waid,
+        `Responde 1 = Sí asistiré o 2 = No podré 🙂`,
+        input,
+        "RSVP"
+      );
       return;
     }
 
     if (s.state === "RSVP_NUM") {
       const n = parseInt(input, 10);
       if (!Number.isFinite(n) || n < 1 || n > cupo) {
-        await sendText(waid, `Por favor envíame un número del 1 al ${cupo}.`);
+        await sendTextAndLog(
+          waid,
+          `Por favor envíame un número del 1 al ${cupo}.`,
+          input,
+          "RSVP"
+        );
         return;
       }
 
       s.temp.numInvitados = n;
 
-      await sendText(
+      await sendTextAndLog(
         waid,
         `Perfecto ✅ Confirmas *${n}* invitado(s).
 ¿Quieres dejar un mensaje para los novios? (opcional)
 
 1) Sí, escribir mensaje
-2) No, enviar sin mensaje`
+2) No, enviar sin mensaje`,
+        input,
+        "RSVP"
       );
       s.state = "RSVP_MSG_DECIDE";
       return;
@@ -377,10 +570,16 @@ También te puedo dar información del horario y ubicación o dresscode del even
 
     if (s.state === "RSVP_MSG_DECIDE") {
       if (input === "1") {
-        await sendText(waid, "Escribe tu mensaje (máximo 500 caracteres) 🙂");
+        await sendTextAndLog(
+          waid,
+          "Escribe tu mensaje (máximo 500 caracteres) 🙂",
+          input,
+          "RSVP"
+        );
         s.state = "RSVP_MSG_WRITE";
         return;
       }
+
       if (input === "2") {
         await postRsvpToSmarterAsp(
           { waid, asistira: true, numInvitados: s.temp.numInvitados, mensaje: "" },
@@ -388,13 +587,24 @@ También te puedo dar información del horario y ubicación o dresscode del even
           SMARTERASP_API_KEY
         );
 
-        await sendText(waid, `¡Listo! 🎉 Confirmación registrada.\n\nNos vemos en la boda 💛`);
+        await sendTextAndLog(
+          waid,
+          `¡Listo! 🎉 Confirmación registrada.\n\nNos vemos en la boda 💛`,
+          input,
+          "RSVP"
+        );
+
         s.state = "MENU";
         s.temp = {};
         return;
       }
 
-      await sendText(waid, `Responde 1 = Escribir mensaje o 2 = Enviar sin mensaje 🙂`);
+      await sendTextAndLog(
+        waid,
+        `Responde 1 = Escribir mensaje o 2 = Enviar sin mensaje 🙂`,
+        input,
+        "RSVP"
+      );
       return;
     }
 
@@ -407,22 +617,30 @@ También te puedo dar información del horario y ubicación o dresscode del even
         SMARTERASP_API_KEY
       );
 
-      await sendText(waid, `¡Gracias! 🎉 Confirmación registrada.\n\nMensaje recibido 💌`);
+      await sendTextAndLog(
+        waid,
+        `¡Gracias! 🎉 Confirmación registrada.\n\nMensaje recibido 💌`,
+        input,
+        "RSVP"
+      );
+
       s.state = "MENU";
       s.temp = {};
       return;
     }
 
     s.state = "MENU";
-    await sendText(waid, `¿Te ayudo con algo más? Responde 1, 2 o 3 🙂`);
+    await sendTextAndLog(
+      waid,
+      `¿Te ayudo con algo más? Responde 1, 2 o 3 🙂`,
+      input,
+      incomingIntent
+    );
   } catch (e) {
     console.error("Webhook error:", e);
   }
 });
 
-/** =========================
- *  DEBUG: listar plantillas visibles para este token/WABA
- *  ========================= */
 app.get("/debug/templates", async (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
 
@@ -444,9 +662,6 @@ app.get("/debug/templates", async (req, res) => {
   }
 });
 
-/** =========================
- *  BROADCAST
- *  ========================= */
 app.get("/broadcast/status", (req, res) => {
   if (!assertBroadcastAuth(req, res)) return;
   if (!broadcastJob) return res.json({ ok: true, running: false });
@@ -580,9 +795,6 @@ app.post("/broadcast/start", async (req, res) => {
   })();
 });
 
-/** =========================
- *  SmarterASP calls
- *  ========================= */
 async function fetchInviteProfile(waid, base, key) {
   if (!base || !key) return null;
 
@@ -648,9 +860,6 @@ async function postLogToSmarterAsp(payload, base, key) {
   } catch {}
 }
 
-/** =========================
- *  WA send
- *  ========================= */
 async function sendText(to, message) {
   if (!WA_TOKEN || !PHONE_NUMBER_ID) throw new Error("Missing WA_TOKEN or PHONE_NUMBER_ID");
   const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
